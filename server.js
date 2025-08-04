@@ -10,59 +10,12 @@ app.get('/health', (req, res) => {
   res.send('OK');
 });
 
-app.get('/chunk-count', (req, res) => {
-  res.json({ count: gridChunks.size });
+app.get('/grid-size', (req, res) => {
+  res.json({ width: GRID_WIDTH, height: GRID_HEIGHT });
 });
 
-app.get('/revealed-stats', (req, res) => {
-  let revealed = 0;
-  let total = 0;
-  for (const chunk of gridChunks.values()) {
-    for (const row of chunk) {
-      for (const cell of row) {
-        total++;
-        if (cell.revealed) revealed++;
-      }
-    }
-  }
-  res.json({
-    revealed,
-    total,
-    percent: total > 0 ? (revealed / total) * 100 : 0,
-    bombsExploded
-  });
-});
-
-app.get('/flagged-stats', (req, res) => {
-  let flagged = 0;
-  let correctFlags = 0;
-  let totalMines = 0;
-  for (const chunk of gridChunks.values()) {
-    for (const row of chunk) {
-      for (const cell of row) {
-        if (cell.hasMine) totalMines++;
-        if (cell.flagged) {
-          flagged++;
-          if (cell.hasMine) correctFlags++;
-        }
-      }
-    }
-  }
-  res.json({
-    flagged,
-    correctFlags,
-    totalMines
-  });
-});
-
-app.get('/active-users', (req, res) => {
-  res.json({ count: io.engine.clientsCount, uniqueUsersEver });
-});
-
-app.post('/reset-chunks', (req, res) => {
-  gridChunks.clear();
-  res.json({ status: 'ok', message: 'All chunks cleared.' });
-});
+// Define all endpoints that depend on variables after they're declared
+// (These will be set up after the variables are defined)
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -73,9 +26,9 @@ const io = new Server(server, {
 
 // --- Chunked grid storage ---
 const CHUNK_SIZE = 100;
-const GRID_WIDTH = 400;
-const GRID_HEIGHT = 300;
-const MINE_PERCENTAGE = 0.18;
+const GRID_WIDTH = 800;
+const GRID_HEIGHT = 600;
+const MINE_PERCENTAGE = 0.17;
 const gridChunks = new Map(); // key: 'cx,cy' => chunkData
 
 function createEmptyChunk(cx, cy) {
@@ -210,6 +163,114 @@ function revealCell(cx, cy, x, y) {
   }
   return revealed;
 }
+
+// --- Express endpoints that depend on variables ---
+app.get('/chunk-count', (req, res) => {
+  res.json({ count: gridChunks.size });
+});
+
+app.get('/revealed-stats', (req, res) => {
+  let revealed = 0;
+  let total = 0;
+  for (const chunk of gridChunks.values()) {
+    for (const row of chunk) {
+      for (const cell of row) {
+        total++;
+        if (cell.revealed) revealed++;
+      }
+    }
+  }
+  res.json({
+    revealed,
+    total,
+    percent: total > 0 ? (revealed / total) * 100 : 0,
+    bombsExploded
+  });
+});
+
+app.get('/flagged-stats', (req, res) => {
+  let flagged = 0;
+  let correctFlags = 0;
+  let totalMines = 0;
+  for (const chunk of gridChunks.values()) {
+    for (const row of chunk) {
+      for (const cell of row) {
+        if (cell.hasMine) totalMines++;
+        if (cell.flagged) {
+          flagged++;
+          if (cell.hasMine) correctFlags++;
+        }
+      }
+    }
+  }
+  res.json({
+    flagged,
+    correctFlags,
+    totalMines
+  });
+});
+
+app.get('/active-users', (req, res) => {
+  res.json({ count: io.engine.clientsCount, uniqueUsersEver });
+});
+
+app.post('/reset-chunks', (req, res) => {
+  gridChunks.clear();
+  res.json({ status: 'ok', message: 'All chunks cleared.' });
+});
+
+app.get('/test', (req, res) => {
+  res.json({ status: 'ok', message: 'Test endpoint.' });
+});
+
+// Debug endpoint to reveal all cells (development only)
+app.get('/reveal-all', (req, res) => {
+  // Only allow in development
+  console.log("revealing all cells");
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Debug endpoint not available in production' });
+  }
+  
+  try {
+    let revealedCount = 0;
+    
+    // Iterate through all chunks and reveal all cells
+    for (const [key, chunk] of gridChunks.entries()) {
+      for (let y = 0; y < chunk.length; y++) {
+        for (let x = 0; x < chunk[y].length; x++) {
+          const cell = chunk[y][x];
+          if (!cell.revealed && !cell.flagged) {
+            cell.revealed = true;
+            revealedCount++;
+          }
+        }
+      }
+    }
+    
+    // Broadcast the updates to all connected clients
+    for (const [key, chunk] of gridChunks.entries()) {
+      const [cx, cy] = key.split(',').map(Number);
+      for (let y = 0; y < chunk.length; y++) {
+        for (let x = 0; x < chunk[y].length; x++) {
+          const cell = chunk[y][x];
+          if (cell.revealed) {
+            io.emit('cell_update', { cx, cy, x, y, cell });
+          }
+        }
+      }
+    }
+    
+    console.log(`[DEBUG] Revealed ${revealedCount} cells`);
+    res.json({ 
+      success: true, 
+      message: `Revealed ${revealedCount} cells`,
+      revealedCount 
+    });
+  } catch (error) {
+    console.error('[DEBUG] Error revealing all cells:', error);
+    res.status(500).json({ error: 'Failed to reveal all cells' });
+  }
+});
 
 // --- Socket.io events ---
 io.on('connection', (socket) => {
