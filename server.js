@@ -27,7 +27,7 @@ const io = new Server(server, {
 // --- Chunked grid storage ---
 const CHUNK_SIZE = 100;
 const GRID_WIDTH = 800;
-const GRID_HEIGHT = 600;
+const GRID_HEIGHT = 700;
 const MINE_PERCENTAGE = 0.17;
 const gridChunks = new Map(); // key: 'cx,cy' => chunkData
 
