@@ -2,6 +2,14 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import { 
+  CHUNK_SIZE, 
+  GRID_WIDTH, 
+  GRID_HEIGHT, 
+  MINE_PERCENTAGE, 
+  PORT,
+  getChunkKey 
+} from './constants.js';
 
 const app = express();
 app.use(cors());
@@ -24,143 +32,362 @@ const io = new Server(server, {
   },
 });
 
-// --- Chunked grid storage ---
-const CHUNK_SIZE = 100;
-const GRID_WIDTH = 800;
-const GRID_HEIGHT = 700;
-const MINE_PERCENTAGE = 0.17;
-const gridChunks = new Map(); // key: 'cx,cy' => chunkData
+// --- Complete grid storage ---
+let completeGrid = null; // Stores the entire grid
+const gridChunks = new Map(); // key: 'cx,cy' => chunkData (for client requests)
 
-function createEmptyChunk(cx, cy) {
-  const chunk = [];
-  for (let y = 0; y < CHUNK_SIZE; y++) {
+/**
+ * Initialize the complete grid with mines and calculate all adjacent counts
+ */
+function initializeCompleteGrid() {
+  console.log(`Initializing complete grid: ${GRID_WIDTH}x${GRID_HEIGHT}`);
+  
+  // Create the complete grid
+  completeGrid = [];
+  for (let y = 0; y < GRID_HEIGHT; y++) {
     const row = [];
-    for (let x = 0; x < CHUNK_SIZE; x++) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
       row.push({
-        x: cx * CHUNK_SIZE + x,
-        y: cy * CHUNK_SIZE + y,
+        x: x,
+        y: y,
         revealed: false,
         hasMine: false,
         adjacentMines: 0,
         flagged: false,
       });
     }
-    chunk.push(row);
+    completeGrid.push(row);
   }
-  return chunk;
+  
+  // Place mines across the entire grid
+  placeMinesInCompleteGrid();
+  
+  // Calculate adjacent mine counts for all cells
+  calculateAdjacentCountsForCompleteGrid();
+  
+  console.log('Complete grid initialized successfully');
 }
 
-function getChunkKey(cx, cy) {
-  return `${cx},${cy}`;
-}
-
-function getOrCreateChunk(cx, cy) {
-  const key = getChunkKey(cx, cy);
-  if (!gridChunks.has(key)) {
-    const chunk = createEmptyChunk(cx, cy);
-    placeMinesInChunk(chunk);
-    fillAdjacentCounts(chunk, cx, cy);
-    gridChunks.set(key, chunk);
-  }
-  return gridChunks.get(key);
-}
-
-function placeMinesInChunk(chunk) {
-  const totalCells = CHUNK_SIZE * CHUNK_SIZE;
+/**
+ * Place mines randomly across the entire grid
+ */
+function placeMinesInCompleteGrid() {
+  const totalCells = GRID_WIDTH * GRID_HEIGHT;
   const mineCount = Math.round(totalCells * MINE_PERCENTAGE);
   let placed = 0;
+  
+  console.log(`Placing ${mineCount} mines in ${totalCells} cells`);
+  
   while (placed < mineCount) {
-    const x = Math.floor(Math.random() * CHUNK_SIZE);
-    const y = Math.floor(Math.random() * CHUNK_SIZE);
-    if (!chunk[y][x].hasMine) {
-      chunk[y][x].hasMine = true;
+    const x = Math.floor(Math.random() * GRID_WIDTH);
+    const y = Math.floor(Math.random() * GRID_HEIGHT);
+    if (!completeGrid[y][x].hasMine) {
+      completeGrid[y][x].hasMine = true;
       placed++;
     }
   }
+  
+  console.log(`Successfully placed ${placed} mines`);
 }
 
-function fillAdjacentCounts(chunk, cx, cy) {
-  for (let y = 0; y < CHUNK_SIZE; y++) {
-    for (let x = 0; x < CHUNK_SIZE; x++) {
-      chunk[y][x].adjacentMines = countAdjacentMines(chunk, x, y, cx, cy);
+/**
+ * Calculate adjacent mine counts for all cells in the complete grid
+ */
+function calculateAdjacentCountsForCompleteGrid() {
+  console.log('Calculating adjacent mine counts...');
+  
+  for (let y = 0; y < GRID_HEIGHT; y++) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      completeGrid[y][x].adjacentMines = countAdjacentMinesInCompleteGrid(x, y);
     }
   }
+  
+  console.log('Adjacent mine counts calculated');
 }
 
-function countAdjacentMines(chunk, x, y, cx, cy) {
+/**
+ * Count adjacent mines for a cell in the complete grid
+ */
+function countAdjacentMinesInCompleteGrid(x, y) {
   let count = 0;
   for (let dy = -1; dy <= 1; dy++) {
     for (let dx = -1; dx <= 1; dx++) {
       if (dx === 0 && dy === 0) continue;
+      
       const nx = x + dx;
       const ny = y + dy;
-      if (nx >= 0 && nx < CHUNK_SIZE && ny >= 0 && ny < CHUNK_SIZE) {
-        if (chunk[ny][nx].hasMine) count++;
-      } else {
-        // Check neighbor chunk
-        const n_cx = cx + Math.floor(nx / CHUNK_SIZE);
-        const n_cy = cy + Math.floor(ny / CHUNK_SIZE);
-        const n_chunk = gridChunks.get(getChunkKey(n_cx, n_cy));
-        if (n_chunk) {
-          const n_x = (nx + CHUNK_SIZE) % CHUNK_SIZE;
-          const n_y = (ny + CHUNK_SIZE) % CHUNK_SIZE;
-          if (n_chunk[n_y] && n_chunk[n_y][n_x] && n_chunk[n_y][n_x].hasMine) count++;
-        }
+      
+      // Check bounds
+      if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+        if (completeGrid[ny][nx].hasMine) count++;
       }
     }
   }
   return count;
 }
 
+/**
+ * Get or create a chunk from the complete grid
+ */
+function getOrCreateChunk(cx, cy) {
+  const key = getChunkKey(cx, cy);
+  
+  if (!gridChunks.has(key)) {
+    // Extract chunk from complete grid
+    const chunk = extractChunkFromCompleteGrid(cx, cy);
+    gridChunks.set(key, chunk);
+  }
+  
+  return gridChunks.get(key);
+}
+
+/**
+ * Extract a chunk from the complete grid
+ */
+function extractChunkFromCompleteGrid(cx, cy) {
+  const chunk = [];
+  const startX = cx * CHUNK_SIZE;
+  const startY = cy * CHUNK_SIZE;
+  
+  for (let y = 0; y < CHUNK_SIZE; y++) {
+    const row = [];
+    for (let x = 0; x < CHUNK_SIZE; x++) {
+      const gridX = startX + x;
+      const gridY = startY + y;
+      
+      // Check if the cell is within the grid bounds
+      if (gridX < GRID_WIDTH && gridY < GRID_HEIGHT) {
+        row.push({ ...completeGrid[gridY][gridX] });
+      } else {
+        // Create empty cell for out-of-bounds areas
+        row.push({
+          x: gridX,
+          y: gridY,
+          revealed: false,
+          hasMine: false,
+          adjacentMines: 0,
+          flagged: false,
+        });
+      }
+    }
+    chunk.push(row);
+  }
+  
+  return chunk;
+}
+
 let uniqueUsersEver = 0;
 let bombsExploded = 0;
 
 function revealCell(cx, cy, x, y) {
-  const chunk = getOrCreateChunk(cx, cy);
-  const cell = chunk[y][x];
+  // Calculate global coordinates
+  const globalX = cx * CHUNK_SIZE + x;
+  const globalY = cy * CHUNK_SIZE + y;
+  
+  // Check bounds
+  if (globalX < 0 || globalX >= GRID_WIDTH || globalY < 0 || globalY >= GRID_HEIGHT) {
+    return [];
+  }
+  
+  const cell = completeGrid[globalY][globalX];
   if (cell.revealed || cell.flagged) return [];
+  
   const revealed = [];
+  
   if (cell.adjacentMines === 0 && !cell.hasMine) {
+    // Flood fill for empty cells
     const visited = new Set();
-    function flood(cx, cy, x, y) {
-      const key = `${cx},${cy},${x},${y}`;
+    function flood(globalX, globalY) {
+      const key = `${globalX},${globalY}`;
       if (visited.has(key)) return;
       visited.add(key);
-      const chunk = getOrCreateChunk(cx, cy);
-      const cell = chunk[y][x];
+      
+      const cell = completeGrid[globalY][globalX];
       if (cell.revealed || cell.flagged) return;
+      
       cell.revealed = true;
-      revealed.push({ cx, cy, x, y, cell });
+      
+      // Calculate chunk coordinates for the revealed cell
+      const cellCx = Math.floor(globalX / CHUNK_SIZE);
+      const cellCy = Math.floor(globalY / CHUNK_SIZE);
+      const cellLocalX = globalX % CHUNK_SIZE;
+      const cellLocalY = globalY % CHUNK_SIZE;
+      
+      revealed.push({ cx: cellCx, cy: cellCy, x: cellLocalX, y: cellLocalY, cell });
+      
       if (cell.adjacentMines === 0 && !cell.hasMine) {
+        // Check all 8 adjacent cells
         for (let dy = -1; dy <= 1; dy++) {
           for (let dx = -1; dx <= 1; dx++) {
             if (dx === 0 && dy === 0) continue;
-            let nx = x + dx;
-            let ny = y + dy;
-            let n_cx = cx;
-            let n_cy = cy;
-            if (nx < 0) { n_cx--; nx += CHUNK_SIZE; }
-            if (ny < 0) { n_cy--; ny += CHUNK_SIZE; }
-            if (nx >= CHUNK_SIZE) { n_cx++; nx -= CHUNK_SIZE; }
-            if (ny >= CHUNK_SIZE) { n_cy++; ny -= CHUNK_SIZE; }
-            if (n_cx < 0 || n_cy < 0 || n_cx * CHUNK_SIZE >= GRID_WIDTH || n_cy * CHUNK_SIZE >= GRID_HEIGHT) continue;
-            const n_chunk = getOrCreateChunk(n_cx, n_cy);
-            if (n_chunk && n_chunk[ny] && n_chunk[ny][nx]) {
-              const n_cell = n_chunk[ny][nx];
-              if (!n_cell.revealed && !n_cell.flagged && !n_cell.hasMine) {
-                flood(n_cx, n_cy, nx, ny);
+            
+            const nx = globalX + dx;
+            const ny = globalY + dy;
+            
+            // Check bounds
+            if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+              const neighborCell = completeGrid[ny][nx];
+              if (!neighborCell.revealed && !neighborCell.flagged && !neighborCell.hasMine) {
+                flood(nx, ny);
               }
             }
           }
         }
       }
     }
-    flood(cx, cy, x, y);
+    flood(globalX, globalY);
   } else {
+    // Single cell reveal
     if (cell.hasMine) bombsExploded++;
     cell.revealed = true;
     revealed.push({ cx, cy, x, y, cell });
   }
+  
+  return revealed;
+}
+
+/**
+ * Handle chord click (simultaneous left and right click) on a revealed number
+ * Reveals all adjacent cells if the correct number of flags are placed
+ */
+function handleChordClick(cx, cy, x, y) {
+  // Calculate global coordinates
+  const globalX = cx * CHUNK_SIZE + x;
+  const globalY = cy * CHUNK_SIZE + y;
+  
+  // Check bounds
+  if (globalX < 0 || globalX >= GRID_WIDTH || globalY < 0 || globalY >= GRID_HEIGHT) {
+    return [];
+  }
+  
+  const cell = completeGrid[globalY][globalX];
+  
+  // Only allow chord clicks on revealed cells with numbers (adjacentMines > 0)
+  if (!cell.revealed || cell.adjacentMines === 0) {
+    return [];
+  }
+  
+  // Count flags and revealed mines around this cell
+  let flagCount = 0;
+  let revealedMineCount = 0;
+  const adjacentCells = [];
+  
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      
+      const nx = globalX + dx;
+      const ny = globalY + dy;
+      
+      // Check bounds
+      if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+        const neighborCell = completeGrid[ny][nx];
+        if (neighborCell.flagged) {
+          flagCount++;
+        } else if (neighborCell.revealed && neighborCell.hasMine) {
+          revealedMineCount++;
+        } else if (!neighborCell.revealed) {
+          adjacentCells.push({ x: nx, y: ny, cell: neighborCell });
+        }
+      }
+    }
+  }
+  
+  // If the total of flags + revealed mines matches the adjacent mine count, reveal all non-flagged adjacent cells
+  if (flagCount + revealedMineCount === cell.adjacentMines) {
+    const revealed = [];
+    
+    for (const { x: nx, y: ny, cell: neighborCell } of adjacentCells) {
+      if (neighborCell.hasMine) {
+        // Hit a mine - game over for this cell
+        bombsExploded++;
+        neighborCell.revealed = true;
+        
+        // Calculate chunk coordinates for the revealed cell
+        const cellCx = Math.floor(nx / CHUNK_SIZE);
+        const cellCy = Math.floor(ny / CHUNK_SIZE);
+        const cellLocalX = nx % CHUNK_SIZE;
+        const cellLocalY = ny % CHUNK_SIZE;
+        
+        revealed.push({ cx: cellCx, cy: cellCy, x: cellLocalX, y: cellLocalY, cell: neighborCell });
+      } else {
+        // Safe cell - reveal it and potentially flood fill
+        const floodRevealed = revealCellWithFlood(nx, ny);
+        revealed.push(...floodRevealed);
+      }
+    }
+    
+    return revealed;
+  }
+  
+  // If flags don't match, do nothing (invalid chord click)
+  return [];
+}
+
+/**
+ * Reveal a cell and perform flood fill if needed
+ */
+function revealCellWithFlood(globalX, globalY) {
+  const cell = completeGrid[globalY][globalX];
+  if (cell.revealed || cell.flagged) return [];
+  
+  const revealed = [];
+  
+  if (cell.adjacentMines === 0 && !cell.hasMine) {
+    // Flood fill for empty cells
+    const visited = new Set();
+    function flood(x, y) {
+      const key = `${x},${y}`;
+      if (visited.has(key)) return;
+      visited.add(key);
+      
+      const cell = completeGrid[y][x];
+      if (cell.revealed || cell.flagged) return;
+      
+      cell.revealed = true;
+      
+      // Calculate chunk coordinates for the revealed cell
+      const cellCx = Math.floor(x / CHUNK_SIZE);
+      const cellCy = Math.floor(y / CHUNK_SIZE);
+      const cellLocalX = x % CHUNK_SIZE;
+      const cellLocalY = y % CHUNK_SIZE;
+      
+      revealed.push({ cx: cellCx, cy: cellCy, x: cellLocalX, y: cellLocalY, cell });
+      
+      if (cell.adjacentMines === 0 && !cell.hasMine) {
+        // Check all 8 adjacent cells
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            
+            const nx = x + dx;
+            const ny = y + dy;
+            
+            // Check bounds
+            if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+              const neighborCell = completeGrid[ny][nx];
+              if (!neighborCell.revealed && !neighborCell.flagged && !neighborCell.hasMine) {
+                flood(nx, ny);
+              }
+            }
+          }
+        }
+      }
+    }
+    flood(globalX, globalY);
+  } else {
+    // Single cell reveal
+    cell.revealed = true;
+    
+    // Calculate chunk coordinates for the revealed cell
+    const cellCx = Math.floor(globalX / CHUNK_SIZE);
+    const cellCy = Math.floor(globalY / CHUNK_SIZE);
+    const cellLocalX = globalX % CHUNK_SIZE;
+    const cellLocalY = globalY % CHUNK_SIZE;
+    
+    revealed.push({ cx: cellCx, cy: cellCy, x: cellLocalX, y: cellLocalY, cell });
+  }
+  
   return revealed;
 }
 
@@ -172,14 +399,15 @@ app.get('/chunk-count', (req, res) => {
 app.get('/revealed-stats', (req, res) => {
   let revealed = 0;
   let total = 0;
-  for (const chunk of gridChunks.values()) {
-    for (const row of chunk) {
-      for (const cell of row) {
-        total++;
-        if (cell.revealed) revealed++;
-      }
+  
+  // Use complete grid for accurate stats
+  for (let y = 0; y < GRID_HEIGHT; y++) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      total++;
+      if (completeGrid[y][x].revealed) revealed++;
     }
   }
+  
   res.json({
     revealed,
     total,
@@ -192,17 +420,19 @@ app.get('/flagged-stats', (req, res) => {
   let flagged = 0;
   let correctFlags = 0;
   let totalMines = 0;
-  for (const chunk of gridChunks.values()) {
-    for (const row of chunk) {
-      for (const cell of row) {
-        if (cell.hasMine) totalMines++;
-        if (cell.flagged) {
-          flagged++;
-          if (cell.hasMine) correctFlags++;
-        }
+  
+  // Use complete grid for accurate stats
+  for (let y = 0; y < GRID_HEIGHT; y++) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      const cell = completeGrid[y][x];
+      if (cell.hasMine) totalMines++;
+      if (cell.flagged) {
+        flagged++;
+        if (cell.hasMine) correctFlags++;
       }
     }
   }
+  
   res.json({
     flagged,
     correctFlags,
@@ -216,7 +446,9 @@ app.get('/active-users', (req, res) => {
 
 app.post('/reset-chunks', (req, res) => {
   gridChunks.clear();
-  res.json({ status: 'ok', message: 'All chunks cleared.' });
+  // Reinitialize the complete grid
+  initializeCompleteGrid();
+  res.json({ status: 'ok', message: 'All chunks cleared and grid reinitialized.' });
 });
 
 app.get('/test', (req, res) => {
@@ -234,28 +466,27 @@ app.get('/reveal-all', (req, res) => {
   try {
     let revealedCount = 0;
     
-    // Iterate through all chunks and reveal all cells
-    for (const [key, chunk] of gridChunks.entries()) {
-      for (let y = 0; y < chunk.length; y++) {
-        for (let x = 0; x < chunk[y].length; x++) {
-          const cell = chunk[y][x];
-          if (!cell.revealed && !cell.flagged) {
-            cell.revealed = true;
-            revealedCount++;
-          }
+    // Iterate through the complete grid and reveal all cells
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        const cell = completeGrid[y][x];
+        if (!cell.revealed && !cell.flagged) {
+          cell.revealed = true;
+          revealedCount++;
         }
       }
     }
     
     // Broadcast the updates to all connected clients
-    for (const [key, chunk] of gridChunks.entries()) {
-      const [cx, cy] = key.split(',').map(Number);
-      for (let y = 0; y < chunk.length; y++) {
-        for (let x = 0; x < chunk[y].length; x++) {
-          const cell = chunk[y][x];
-          if (cell.revealed) {
-            io.emit('cell_update', { cx, cy, x, y, cell });
-          }
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        const cell = completeGrid[y][x];
+        if (cell.revealed) {
+          const cx = Math.floor(x / CHUNK_SIZE);
+          const cy = Math.floor(y / CHUNK_SIZE);
+          const localX = x % CHUNK_SIZE;
+          const localY = y % CHUNK_SIZE;
+          io.emit('cell_update', { cx, cy, x: localX, y: localY, cell });
         }
       }
     }
@@ -297,11 +528,28 @@ io.on('connection', (socket) => {
 
   // Client requests to flag/unflag a cell
   socket.on('flag_cell', ({ cx, cy, x, y }) => {
-    const chunk = getOrCreateChunk(cx, cy);
-    const cell = chunk[y][x];
+    // Calculate global coordinates
+    const globalX = cx * CHUNK_SIZE + x;
+    const globalY = cy * CHUNK_SIZE + y;
+    
+    // Check bounds
+    if (globalX < 0 || globalX >= GRID_WIDTH || globalY < 0 || globalY >= GRID_HEIGHT) {
+      return;
+    }
+    
+    const cell = completeGrid[globalY][globalX];
     if (cell.revealed) return;
     cell.flagged = !cell.flagged;
     io.emit('cell_update', { cx, cy, x, y, cell });
+  });
+
+  // Client requests to chord click (simultaneous left and right click)
+  socket.on('chord_click', ({ cx, cy, x, y }) => {
+    const revealed = handleChordClick(cx, cy, x, y);
+    // Broadcast revealed cells to all clients
+    for (const r of revealed) {
+      io.emit('cell_update', { cx: r.cx, cy: r.cy, x: r.x, y: r.y, cell: r.cell });
+    }
   });
 
   socket.on('disconnect', () => {
@@ -309,7 +557,9 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = 3001;
+// Initialize the complete grid when the server starts
+initializeCompleteGrid();
+
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 }); 
