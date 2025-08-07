@@ -32,9 +32,10 @@ const io = new Server(server, {
   },
 });
 
-// --- Complete grid storage ---
-let completeGrid = null; // Stores the entire grid
-const gridChunks = new Map(); // key: 'cx,cy' => chunkData (for client requests)
+// Global variables
+let completeGrid = null; // The complete grid state (source of truth)
+let uniqueUsersEver = 0;
+let bombsExploded = 0;
 
 /**
  * Initialize the complete grid with mines and calculate all adjacent counts
@@ -66,6 +67,10 @@ function initializeCompleteGrid() {
   calculateAdjacentCountsForCompleteGrid();
   
   console.log('Complete grid initialized successfully');
+  
+  // Print initial grid state for debugging (small area)
+  console.log('\n🎯 INITIAL GRID STATE (first 10x10 area):');
+  printGridState(0, 0, 10, 10);
 }
 
 /**
@@ -130,15 +135,8 @@ function countAdjacentMinesInCompleteGrid(x, y) {
  * Get or create a chunk from the complete grid
  */
 function getOrCreateChunk(cx, cy) {
-  const key = getChunkKey(cx, cy);
-  
-  if (!gridChunks.has(key)) {
-    // Extract chunk from complete grid
-    const chunk = extractChunkFromCompleteGrid(cx, cy);
-    gridChunks.set(key, chunk);
-  }
-  
-  return gridChunks.get(key);
+  // Always extract fresh data from completeGrid instead of caching
+  return extractChunkFromCompleteGrid(cx, cy);
 }
 
 /**
@@ -156,7 +154,10 @@ function extractChunkFromCompleteGrid(cx, cy) {
       const gridY = startY + y;
       
       // Check if the cell is within the grid bounds
-      if (gridX < GRID_WIDTH && gridY < GRID_HEIGHT) {
+      if (gridX < GRID_WIDTH && gridY < GRID_HEIGHT) {  
+        if (cx === 0 && cy === 0 && gridX === 0 && gridY === 0) {
+          console.log('Cell is within bounds');
+        }
         row.push({ ...completeGrid[gridY][gridX] });
       } else {
         // Create empty cell for out-of-bounds areas
@@ -175,9 +176,6 @@ function extractChunkFromCompleteGrid(cx, cy) {
   
   return chunk;
 }
-
-let uniqueUsersEver = 0;
-let bombsExploded = 0;
 
 function revealCell(cx, cy, x, y) {
   // Calculate global coordinates
@@ -391,9 +389,123 @@ function revealCellWithFlood(globalX, globalY) {
   return revealed;
 }
 
+/**
+ * Debug function to print the complete grid state in a visual format
+ * @param {number} startX - Starting X coordinate (optional, defaults to 0)
+ * @param {number} startY - Starting Y coordinate (optional, defaults to 0)
+ * @param {number} width - Width of the area to print (optional, defaults to full grid)
+ * @param {number} height - Height of the area to print (optional, defaults to full grid)
+ */
+function printGridState(startX = 0, startY = 0, width = GRID_WIDTH, height = GRID_HEIGHT) {
+  if (!completeGrid) {
+    console.log('❌ Grid not initialized yet');
+    return;
+  }
+
+  const endX = Math.min(startX + width, GRID_WIDTH);
+  const endY = Math.min(startY + height, GRID_HEIGHT);
+  
+  console.log(`\n🔍 GRID STATE DEBUG (${startX},${startY}) to (${endX-1},${endY-1})`);
+  console.log('═'.repeat((endX - startX) * 2 + 3));
+  
+  // Print column headers
+  let header = '   ';
+  for (let x = startX; x < endX; x++) {
+    header += `${x % 10} `;
+  }
+  console.log(header);
+  console.log('  ┌' + '─'.repeat((endX - startX) * 2 - 1) + '┐');
+  
+  // Print grid rows
+  for (let y = startY; y < endY; y++) {
+    let row = `${y.toString().padStart(2)}│`;
+    for (let x = startX; x < endX; x++) {
+      const cell = completeGrid[y][x];
+      let symbol = ' ';
+      
+      if (cell.flagged) {
+        symbol = '🚩'; // Flag
+      } else if (cell.revealed) {
+        if (cell.hasMine) {
+          symbol = '💣'; // Revealed mine
+        } else if (cell.adjacentMines === 0) {
+          symbol = '·'; // Empty revealed cell
+        } else {
+          symbol = cell.adjacentMines.toString(); // Number
+        }
+      } else {
+        if (cell.hasMine) {
+          symbol = '💣'; // Hidden mine (for debugging)
+        } else {
+          symbol = '█'; // Hidden cell
+        }
+      }
+      
+      row += `${symbol} `;
+    }
+    row += '│';
+    console.log(row);
+  }
+  
+  console.log('  └' + '─'.repeat((endX - startX) * 2 - 1) + '┘');
+  console.log('═'.repeat((endX - startX) * 2 + 3));
+  
+  // Print legend
+  console.log('📋 LEGEND:');
+  console.log('  █ = Hidden cell');
+  console.log('  · = Empty revealed cell');
+  console.log('  🚩 = Flagged cell');
+  console.log('  💣 = Mine (revealed or hidden)');
+  console.log('  1-8 = Adjacent mine count');
+  console.log('');
+  
+  // Print statistics for this area
+  let stats = {
+    total: 0,
+    revealed: 0,
+    flagged: 0,
+    mines: 0,
+    hidden: 0
+  };
+  
+  for (let y = startY; y < endY; y++) {
+    for (let x = startX; x < endX; x++) {
+      const cell = completeGrid[y][x];
+      stats.total++;
+      if (cell.revealed) stats.revealed++;
+      if (cell.flagged) stats.flagged++;
+      if (cell.hasMine) stats.mines++;
+      if (!cell.revealed && !cell.flagged) stats.hidden++;
+    }
+  }
+  
+  console.log(`📊 AREA STATS: ${stats.revealed}/${stats.total} revealed, ${stats.flagged} flagged, ${stats.mines} mines, ${stats.hidden} hidden`);
+  console.log('');
+}
+
+/**
+ * Debug function to print a specific chunk state
+ * @param {number} cx - Chunk X coordinate
+ * @param {number} cy - Chunk Y coordinate
+ */
+function printChunkState(cx, cy) {
+  if (!completeGrid) {
+    console.log('❌ Grid not initialized yet');
+    return;
+  }
+  
+  const startX = cx * CHUNK_SIZE;
+  const startY = cy * CHUNK_SIZE;
+  const endX = Math.min(startX + CHUNK_SIZE, GRID_WIDTH);
+  const endY = Math.min(startY + CHUNK_SIZE, GRID_HEIGHT);
+  
+  console.log(`\n🔍 CHUNK STATE DEBUG (${cx},${cy}) - World coords: (${startX},${startY}) to (${endX-1},${endY-1})`);
+  printGridState(startX, startY, endX - startX, endY - startY);
+}
+
 // --- Express endpoints that depend on variables ---
 app.get('/chunk-count', (req, res) => {
-  res.json({ count: gridChunks.size });
+  res.json({ count: 0 }); // No chunks to count
 });
 
 app.get('/revealed-stats', (req, res) => {
@@ -445,7 +557,7 @@ app.get('/active-users', (req, res) => {
 });
 
 app.post('/reset-chunks', (req, res) => {
-  gridChunks.clear();
+  // No chunks to clear
   // Reinitialize the complete grid
   initializeCompleteGrid();
   res.json({ status: 'ok', message: 'All chunks cleared and grid reinitialized.' });
@@ -453,6 +565,54 @@ app.post('/reset-chunks', (req, res) => {
 
 app.get('/test', (req, res) => {
   res.json({ status: 'ok', message: 'Test endpoint.' });
+});
+
+// Debug endpoints for grid state visualization
+app.get('/debug/grid', (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Debug endpoints not available in production' });
+  }
+  
+  const startX = parseInt(req.query.startX) || 0;
+  const startY = parseInt(req.query.startY) || 0;
+  const width = parseInt(req.query.width) || 20; // Default to 20x20 area
+  const height = parseInt(req.query.height) || 20;
+  
+  printGridState(startX, startY, width, height);
+  res.json({ 
+    success: true, 
+    message: `Printed grid state for area (${startX},${startY}) to (${startX+width-1},${startY+height-1})`,
+    area: { startX, startY, width, height }
+  });
+});
+
+app.get('/debug/chunk/:cx/:cy', (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Debug endpoints not available in production' });
+  }
+  
+  const cx = parseInt(req.params.cx);
+  const cy = parseInt(req.params.cy);
+  
+  printChunkState(cx, cy);
+  res.json({ 
+    success: true, 
+    message: `Printed chunk state for chunk (${cx},${cy})`,
+    chunk: { cx, cy }
+  });
+});
+
+app.get('/debug/full-grid', (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Debug endpoints not available in production' });
+  }
+  
+  printGridState(); // Print the entire grid
+  res.json({ 
+    success: true, 
+    message: `Printed full grid state (${GRID_WIDTH}x${GRID_HEIGHT})`,
+    gridSize: { width: GRID_WIDTH, height: GRID_HEIGHT }
+  });
 });
 
 // Debug endpoint to reveal all cells (development only)
@@ -514,12 +674,26 @@ io.on('connection', (socket) => {
   // Client requests a chunk
   socket.on('get_chunk', ({ cx, cy }) => {
     const chunk = getOrCreateChunk(cx, cy);
+    // if (cx === 0 && cy === 0) {
+    //   console.log('🔢 Revealed: x: 0, y: 0', chunk[0][0].revealed);
+    //   console.log('🔢 Revealed: x: 0, y: 1', chunk[0][1].revealed);
+    //   console.log('🔢 Revealed: x: 0, y: 2', chunk[0][2].revealed);
+    //   console.log('🔢 Revealed: x: 0, y: 3', chunk[0][3].revealed);
+    //   console.log('🔢 Revealed: x: 0, y: 4', chunk[0][4].revealed);
+    //   console.log('🔢 Revealed: x: 0, y: 5', chunk[0][5].revealed);
+    //   console.log('🔢 Revealed: x: 0, y: 6', chunk[0][6].revealed);
+    //   console.log('🔢 Revealed: x: 0, y: 7', chunk[0][7].revealed);
+    //   console.log('🔢 Revealed: x: 0, y: 8', chunk[0][8].revealed);
+    // }
+
     socket.emit('chunk_data', { cx, cy, chunk });
   });
 
   // Client requests to reveal a cell
   socket.on('reveal_cell', ({ cx, cy, x, y }) => {
+    console.log(`[backend] Received reveal_cell:`, { cx, cy, x, y });
     const revealed = revealCell(cx, cy, x, y);
+    console.log(`[backend] Revealed ${revealed.length} cells`);
     // Broadcast revealed cells to all clients
     for (const r of revealed) {
       io.emit('cell_update', { cx: r.cx, cy: r.cy, x: r.x, y: r.y, cell: r.cell });
@@ -528,18 +702,24 @@ io.on('connection', (socket) => {
 
   // Client requests to flag/unflag a cell
   socket.on('flag_cell', ({ cx, cy, x, y }) => {
+    console.log(`[backend] Received flag_cell:`, { cx, cy, x, y });
     // Calculate global coordinates
     const globalX = cx * CHUNK_SIZE + x;
     const globalY = cy * CHUNK_SIZE + y;
     
     // Check bounds
     if (globalX < 0 || globalX >= GRID_WIDTH || globalY < 0 || globalY >= GRID_HEIGHT) {
+      console.log(`[backend] Flag cell out of bounds:`, { globalX, globalY });
       return;
     }
     
     const cell = completeGrid[globalY][globalX];
-    if (cell.revealed) return;
+    if (cell.revealed) {
+      console.log(`[backend] Cannot flag revealed cell`);
+      return;
+    }
     cell.flagged = !cell.flagged;
+    console.log(`[backend] Cell flagged:`, { flagged: cell.flagged });
     io.emit('cell_update', { cx, cy, x, y, cell });
   });
 
